@@ -1,10 +1,18 @@
-
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer,WebSocket } from 'ws';
+import { createClient } from 'redis';
 
 const wss = new WebSocketServer({ port: 8080 });
-const subscriptions: {[key:string]:{
+const subscribeClient = createClient();
+subscribeClient.connect();
+
+
+const publishClient = createClient();
+publishClient.connect()
+
+
+const subscriptions:{[key:string]:{
   ws:WebSocket,
-  rooms:string[]
+  rooms: string[]
 }} = {
 
 }
@@ -18,27 +26,50 @@ wss.on('connection', function connection(ws) {
   }
 
 
-
   ws.on('error', console.error);
 
   ws.on('message', function message(data) {
     const parsedMessage = JSON.parse(data as unknown as string);
+    
     if(parsedMessage.type === "SUBSCRIBETOROOM"){
       subscriptions[id].rooms.push(parsedMessage.room);
+      if(atleastOneUserSubscribe(parsedMessage.room)){
+        console.log("subscribing to pubsub on "+ parsedMessage.room);
+
+        subscribeClient.subscribe(parsedMessage.room, (message)=>{
+          const msg = JSON.parse(message as unknown as string);
+          console.log(msg); 
+          Object.keys(subscriptions).forEach((userID)=>{
+            const {ws, rooms} = subscriptions[userID];
+            if(rooms.includes(msg.room)){
+              ws.send(msg.message);
+            }
+          })
+        })
+      }
     }
-    
-    if(parsedMessage.type === "MESSAGE"){
+
+    if(parsedMessage.type === "UNSUBSCRIBE"){
+      subscriptions[id].rooms = subscriptions[id].rooms.filter(x => x !== parsedMessage.room);
+
+      if(noUserInterested(parsedMessage.room)){
+        console.log("unsubscribing from the room " + parsedMessage.room);
+        subscribeClient.unsubscribe(parsedMessage.room);
+      }
+    }
+
+
+    if(parsedMessage.type === "SENDMESSAGE"){
       const message = parsedMessage.message;
       const room = parsedMessage.room;
-
-      Object.keys(subscriptions).forEach((userID)=>{
-        const {ws, rooms} = subscriptions[userID];
-        if(rooms.includes(room)){
-          ws.send(message);
-        }
-      })
-
+      
+      publishClient.publish(room, JSON.stringify({
+        type:"SENDMESSAGE",
+        room:room,
+        message
+      }))
     }
+
 
     console.log('received: %s', data);
   });
@@ -46,7 +77,36 @@ wss.on('connection', function connection(ws) {
   ws.send('something');
 });
 
-
 function createRandomID(){
   return Math.random();
+}
+
+function atleastOneUserSubscribe(room:string){
+  let totalInterestedUser = 0;
+
+  Object.keys(subscriptions).map((userID)=>{
+    if(subscriptions[userID].rooms.includes(room)){
+      totalInterestedUser++;
+    }
+  })
+
+  if(totalInterestedUser == 1){
+    return true;
+  }
+  return false;
+}
+
+function noUserInterested(room:string){
+  let totalInterestedUser = 0;
+
+  Object.keys(subscriptions).map((userID)=>{
+    if(subscriptions[userID].rooms.includes(room)){
+      totalInterestedUser++;
+    }
+  })
+
+  if(totalInterestedUser == 0){
+    return true;
+  }
+  return false;
 }
